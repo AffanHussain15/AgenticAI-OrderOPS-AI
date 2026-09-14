@@ -1,0 +1,10 @@
+# Migrations are run from a developer machine against the hosted database, not
+# from the serverless function. Excluding this directory also stops it from
+# shadowing the installed `alembic` package on sys.path.
+alembic/
+alembic.ini
+seed.py
+
+.env
+__pycache__/
+*.pyc

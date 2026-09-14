@@ -78,6 +78,59 @@ npm run dev                   # http://localhost:5173
 The UI reads and writes through the API above — there is no client-side copy of the
 workflow. Start the backend first, or the pages will show a connection error.
 
+## Deployment (Vercel + Neon)
+
+The frontend and backend deploy as **two separate Vercel projects** from this one repo,
+each with its own Root Directory.
+
+### 1. Database — Neon
+
+Create a project at [neon.tech](https://neon.tech) and copy the **pooled** connection
+string (it contains `-pooler`). A direct string exhausts the connection limit, because
+every serverless invocation opens its own.
+
+Create the schema and catalog from your machine — migrations do not run on Vercel:
+
+```bash
+cd backend
+DATABASE_URL="postgresql://...-pooler.../neondb?sslmode=require" alembic upgrade head
+DATABASE_URL="postgresql://...-pooler.../neondb?sslmode=require" python seed.py
+```
+
+### 2. Backend project
+
+| Setting | Value |
+|---|---|
+| Root Directory | `backend` |
+| Framework Preset | Other |
+| Env: `DATABASE_URL` | the pooled Neon string |
+| Env: `ALLOWED_ORIGINS` | your frontend URL, e.g. `https://orderops-ai.vercel.app` |
+
+`vercel.json` rewrites every path to the ASGI function in `api/index.py`. Verify with
+`curl https://<backend>.vercel.app/health`.
+
+### 3. Frontend project
+
+| Setting | Value |
+|---|---|
+| Root Directory | `frontend` |
+| Framework Preset | Vite |
+| Env: `VITE_API_URL` | your backend URL, e.g. `https://orderops-api.vercel.app` |
+
+`VITE_API_URL` is inlined at **build** time, so set it before deploying — changing it
+later requires a redeploy, not just a restart.
+
+### Serverless caveats
+
+- **Uptime** is process uptime. Serverless processes are recycled constantly, so the
+  dashboard tile will read near zero regardless of real availability. The
+  `db_healthy` flag beside it is the meaningful signal.
+- **Cold starts** of 2-5s occur after idle while SQLAlchemy and LangGraph import, which
+  shows up as an outlier in the processing-time metric on the first request.
+
+Neither affects correctness. A long-lived host (Render, Railway, Fly) avoids both and
+suits a stateful workflow engine better, at the cost of running two platforms.
+
 ## API
 
 | Method | Endpoint | Purpose |
