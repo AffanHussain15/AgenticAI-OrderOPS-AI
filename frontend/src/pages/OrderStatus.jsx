@@ -1,79 +1,189 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useOrders } from '../context/OrderContext'
+import StatusBadge, { RiskBadge } from '../components/StatusBadge'
+import WorkflowTimeline, { buildSteps } from '../components/WorkflowTimeline'
+import { Icon } from '../components/Icons'
 
-const STATUS_LABELS = {
-  processing: 'Processing',
-  flagged_for_audit: 'Flagged for Manual Audit (High Risk)',
-  fulfilled: 'Fulfilled',
-  fulfilled_with_alternative: 'Fulfilled (Alternative Item Accepted)',
-  awaiting_customer_response: 'Waiting for Your Response',
-  refunded: 'Refunded',
+function formatDate(value) {
+  return new Date(value).toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
 }
 
 export default function OrderStatus() {
   const { orderId } = useParams()
-  const { getOrder, respondToOffer } = useOrders()
+  const { getOrder, respondToOffer, loading, error } = useOrders()
+  const [responding, setResponding] = useState(false)
+  const [actionError, setActionError] = useState(null)
   const order = getOrder(orderId)
 
-  if (!order) {
+  async function respond(accepted) {
+    setResponding(true)
+    setActionError(null)
+    try {
+      await respondToOffer(order.id, accepted)
+    } catch (err) {
+      setActionError(err.message)
+    } finally {
+      setResponding(false)
+    }
+  }
+
+  if (loading) {
     return (
-      <div className="card">
-        <p>Order not found.</p>
-        <Link to="/">Place a new order</Link>
+      <div className="card empty">
+        <h3>Loading order…</h3>
       </div>
     )
   }
 
-  return (
-    <div className="card">
-      <h1>Order {order.id}</h1>
-      <p className={`status-badge status-${order.status}`}>{STATUS_LABELS[order.status]}</p>
-
-      <div className="order-details">
-        <p><strong>Customer:</strong> {order.customerName}</p>
-        <p><strong>Item:</strong> {order.itemName} × {order.quantity}</p>
-        <p><strong>Risk Score:</strong> {order.riskScore}</p>
-        <p><strong>Placed At:</strong> {new Date(order.createdAt).toLocaleString()}</p>
-        {order.resolvedAt && (
-          <p><strong>Resolved At:</strong> {new Date(order.resolvedAt).toLocaleString()}</p>
-        )}
+  if (!order) {
+    return (
+      <div className="card empty">
+        <h3>Order not found</h3>
+        <p>{error ?? "That order doesn't exist."}</p>
+        <p style={{ marginTop: 18 }}>
+          <Link to="/" className="btn btn-ghost btn-sm">
+            Place a new order
+          </Link>
+        </p>
       </div>
+    )
+  }
+
+  const offer = order.negotiation_offer
+  const showOffer = order.status === 'awaiting_customer_response' && offer
+  const savings = offer ? (offer.original_price - offer.discounted_price) * order.quantity : 0
+
+  return (
+    <div className="stack">
+      <header className="status-hero">
+        <div>
+          <div className="order-id">Order #{order.id}</div>
+          <h1>{order.item_name}</h1>
+          <StatusBadge status={order.status} size="lg" />
+        </div>
+        <RiskBadge risk={order.risk_score} />
+
+        <div className="detail-grid" style={{ width: '100%' }}>
+          <div>
+            <div className="detail-label">Customer</div>
+            <div className="detail-value">{order.customer_name}</div>
+          </div>
+          <div>
+            <div className="detail-label">Quantity</div>
+            <div className="detail-value">{order.quantity}</div>
+          </div>
+          <div>
+            <div className="detail-label">Unit price</div>
+            <div className="detail-value">${order.unit_price}</div>
+          </div>
+          <div>
+            <div className="detail-label">Placed</div>
+            <div className="detail-value">{formatDate(order.created_at)}</div>
+          </div>
+          {typeof order.processing_ms === 'number' && (
+            <div>
+              <div className="detail-label">Agent time</div>
+              <div className="detail-value">{order.processing_ms.toFixed(1)} ms</div>
+            </div>
+          )}
+          {order.resolved_at && (
+            <div>
+              <div className="detail-label">Resolved</div>
+              <div className="detail-value">{formatDate(order.resolved_at)}</div>
+            </div>
+          )}
+          {order.original_item_name && (
+            <div>
+              <div className="detail-label">Originally ordered</div>
+              <div className="detail-value">{order.original_item_name}</div>
+            </div>
+          )}
+        </div>
+      </header>
 
       {order.status === 'flagged_for_audit' && (
-        <p className="note">
-          This order was flagged for manual review due to a high fraud risk score.
-          An admin needs to approve it before it can proceed.
-        </p>
-      )}
-
-      {order.status === 'awaiting_customer_response' && order.negotiationOffer && (
-        <div className="offer-box">
-          <h3>Your item is out of stock</h3>
-          <p>
-            We'd like to offer you <strong>{order.negotiationOffer.itemName}</strong> instead, at{' '}
-            <strong>{order.negotiationOffer.discountPercent}% off</strong>:{' '}
-            <span className="strike">${order.negotiationOffer.originalPrice}</span>{' '}
-            <strong>${order.negotiationOffer.discountedPrice}</strong>
-          </p>
-          <div className="offer-actions">
-            <button onClick={() => respondToOffer(order.id, true)}>Accept Alternative</button>
-            <button className="secondary" onClick={() => respondToOffer(order.id, false)}>
-              Decline & Refund Me
-            </button>
-          </div>
+        <div className="note">
+          <Icon.alert width={15} height={15} />
+          <span>
+            This order scored <strong>high risk</strong> during the fraud check and is
+            held for manual audit. An admin must approve it from the dashboard before the
+            pipeline resumes.
+          </span>
         </div>
       )}
 
-      <h3>Workflow History</h3>
-      <ul className="history-list">
-        {order.history.map((h, i) => (
-          <li key={i}>
-            <code>{h.step}</code> → {h.result}
-          </li>
-        ))}
-      </ul>
+      {showOffer && (
+        <section className="offer">
+          <div className="offer-head">
+            <Icon.chat width={18} height={18} />
+            <h3>Your item is out of stock</h3>
+          </div>
+          <p className="offer-lede">
+            Rather than cancel your order, the agent found the closest available
+            substitute and applied a {offer.discount_percent}% discount
+            {offer.channel && ` — sent by ${offer.channel}`}.
+          </p>
 
-      <Link to="/">Place another order</Link>
+          <div className="offer-item">
+            <div>
+              <div className="offer-item-name">{offer.alternative_item_name}</div>
+              <div className="offer-item-sub">
+                Replaces {order.item_name} · {order.quantity} unit
+                {order.quantity > 1 ? 's' : ''}
+                {savings > 0 && ` · you save $${savings.toFixed(2)}`}
+              </div>
+            </div>
+            <div className="price-block">
+              <span className="strike">${offer.original_price}</span>
+              <span className="price-now">${offer.discounted_price}</span>
+              <span className="badge ok">−{offer.discount_percent}%</span>
+            </div>
+          </div>
+
+          {actionError && (
+            <div className="note" style={{ marginBottom: 16 }}>
+              <Icon.alert width={15} height={15} />
+              <span>{actionError}</span>
+            </div>
+          )}
+
+          <div className="offer-actions">
+            <button className="btn" disabled={responding} onClick={() => respond(true)}>
+              <Icon.check width={15} height={15} />
+              {responding ? 'Submitting…' : 'Accept alternative'}
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={responding}
+              onClick={() => respond(false)}
+            >
+              <Icon.x width={15} height={15} />
+              Decline &amp; refund me
+            </button>
+          </div>
+        </section>
+      )}
+
+      <section className="card">
+        <div className="card-head">
+          <div className="card-title">
+            <Icon.activity />
+            Agent workflow
+          </div>
+          <span className="badge neutral">{buildSteps(order).length} steps</span>
+        </div>
+        <WorkflowTimeline order={order} />
+      </section>
+
+      <div>
+        <Link to="/" className="btn btn-ghost btn-sm">
+          Place another order
+        </Link>
+      </div>
     </div>
   )
 }
